@@ -13,6 +13,7 @@ import (
 type OpenHardwareMonitorConfig struct {
 	SensorsType []string
 	Parent      []string
+	Namespace   string	
 }
 
 type OpenHardwareMonitorData struct {
@@ -53,7 +54,11 @@ func (p *OpenHardwareMonitorConfig) CreateQuery() (string, error) {
 
 func (p *OpenHardwareMonitorConfig) QueryData(query string) ([]OpenHardwareMonitorData, error) {
 	var dst []OpenHardwareMonitorData
-	err := wmi.QueryNamespace(query, &dst, "root/OpenHardwareMonitor")
+	var ns = "root/OpenHardwareMonitor"
+	if (p.Namespace != "") {
+		ns = p.Namespace
+	}
+	err := wmi.QueryNamespace(query, &dst, ns)
 
 	// Replace all spaces
 	replace := map[string]string{

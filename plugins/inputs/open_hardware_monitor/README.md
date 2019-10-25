@@ -9,10 +9,31 @@ This input plugin will gather sensors data provide by [Open hardware Monitor](ht
 # [[inputs.open_hardware_monitor]]
 	## Sensors to query ( if not given then all is queried )
 	SensorsType = ["Temperature", "Fan", "Voltage"] # optional
-	
+
 	## Which hardware should be available
 	Parent = ["intelcpu_0"]  # optional
+	
+	## The root WIM namespace to query
+	## To use LibreHardwareMonitor, change to "root/LibreHardwareMonitor"
+	Namespace = "root/OpenHardwareMonitor" #optional	
 ```
+
+### Building
+To build this project in windows:
+* Ensure your project is in following folder format: \src\github.com\influxdata\telegraf\plugins\inputs\open_hardware_monitor
+* Create a bat file and fill out variables at top:
+```
+setlocal
+set GOPATH=%~dp0
+set GOEXEC=c:\go\bin\go.exe
+set DEP=c:\temp\\dep.exe
+
+cd /d %~dp0src\github.com\influxdata\telegraf
+%DEP% ensure -vendor-only
+%GOEXEC% build ./cmd/telegraf
+REM %GOEXEC% test -v ./plugins/inputs/open_hardware_monitor/...
+```
+* Execute the bat file and go to the telegraf and execute telegraf.exe
 
 ### Measurements & Fields:
 
