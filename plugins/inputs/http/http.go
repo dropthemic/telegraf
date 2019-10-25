@@ -1,7 +1,6 @@
 package http
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -29,6 +28,8 @@ type HTTP struct {
 	Username string `toml:"username"`
 	Password string `toml:"password"`
 	tls.ClientConfig
+
+	SuccessStatusCodes []int `toml:"success_status_codes"`
 
 	Timeout internal.Duration `toml:"timeout"`
 
@@ -72,6 +73,9 @@ var sampleConfig = `
   ## Amount of time allowed to complete the HTTP request
   # timeout = "5s"
 
+  ## List of success status codes
+  # success_status_codes = [200]
+
   ## Data format to consume.
   ## Each data format has its own unique set of configuration options, read
   ## more about them here:
@@ -89,27 +93,30 @@ func (*HTTP) Description() string {
 	return "Read formatted metrics from one or more HTTP endpoints"
 }
 
+func (h *HTTP) Init() error {
+	tlsCfg, err := h.ClientConfig.TLSConfig()
+	if err != nil {
+		return err
+	}
+
+	h.client = &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsCfg,
+			Proxy:           http.ProxyFromEnvironment,
+		},
+		Timeout: h.Timeout.Duration,
+	}
+
+	// Set default as [200]
+	if len(h.SuccessStatusCodes) == 0 {
+		h.SuccessStatusCodes = []int{200}
+	}
+	return nil
+}
+
 // Gather takes in an accumulator and adds the metrics that the Input
 // gathers. This is called every "interval"
 func (h *HTTP) Gather(acc telegraf.Accumulator) error {
-	if h.parser == nil {
-		return errors.New("Parser is not set")
-	}
-
-	if h.client == nil {
-		tlsCfg, err := h.ClientConfig.TLSConfig()
-		if err != nil {
-			return err
-		}
-		h.client = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: tlsCfg,
-				Proxy:           http.ProxyFromEnvironment,
-			},
-			Timeout: h.Timeout.Duration,
-		}
-	}
-
 	var wg sync.WaitGroup
 	for _, u := range h.URLs {
 		wg.Add(1)
@@ -174,12 +181,19 @@ func (h *HTTP) gatherURL(
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Received status code %d (%s), expected %d (%s)",
+	responseHasSuccessCode := false
+	for _, statusCode := range h.SuccessStatusCodes {
+		if resp.StatusCode == statusCode {
+			responseHasSuccessCode = true
+			break
+		}
+	}
+
+	if !responseHasSuccessCode {
+		return fmt.Errorf("received status code %d (%s), expected any value out of %v",
 			resp.StatusCode,
 			http.StatusText(resp.StatusCode),
-			http.StatusOK,
-			http.StatusText(http.StatusOK))
+			h.SuccessStatusCodes)
 	}
 
 	b, err := ioutil.ReadAll(resp.Body)

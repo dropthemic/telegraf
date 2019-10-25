@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +54,8 @@ type CiscoTelemetryGNMI struct {
 	acc     telegraf.Accumulator
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+
+	Log telegraf.Logger
 }
 
 // Subscription for a GNMI client
@@ -101,17 +103,27 @@ func (c *CiscoTelemetryGNMI) Start(acc telegraf.Accumulator) error {
 	// Invert explicit alias list and prefill subscription names
 	c.aliases = make(map[string]string, len(c.Subscriptions)+len(c.Aliases))
 	for _, subscription := range c.Subscriptions {
-		path := subscription.Path
-		if len(subscription.Origin) > 0 {
-			path = subscription.Origin + ":" + path
+		var gnmiLongPath, gnmiShortPath *gnmi.Path
+
+		// Build the subscription path without keys
+		if gnmiLongPath, err = parsePath(subscription.Origin, subscription.Path, ""); err != nil {
+			return err
+		}
+		if gnmiShortPath, err = parsePath("", subscription.Path, ""); err != nil {
+			return err
 		}
 
+		longPath, _ := c.handlePath(gnmiLongPath, nil, "")
+		shortPath, _ := c.handlePath(gnmiShortPath, nil, "")
 		name := subscription.Name
+
+		// If the user didn't provide a measurement name, use last path element
 		if len(name) == 0 {
-			name = path[strings.LastIndexByte(path, '/')+1:]
+			name = path.Base(shortPath)
 		}
 		if len(name) > 0 {
-			c.aliases[path] = name
+			c.aliases[longPath] = name
+			c.aliases[shortPath] = name
 		}
 	}
 	for alias, path := range c.Aliases {
@@ -207,8 +219,8 @@ func (c *CiscoTelemetryGNMI) subscribeGNMI(ctx context.Context, address string, 
 		return fmt.Errorf("failed to send subscription request: %v", err)
 	}
 
-	log.Printf("D! [inputs.cisco_telemetry_gnmi]: Connection to GNMI device %s established", address)
-	defer log.Printf("D! [inputs.cisco_telemetry_gnmi]: Connection to GNMI device %s closed", address)
+	c.Log.Debugf("Connection to GNMI device %s established", address)
+	defer c.Log.Debugf("Connection to GNMI device %s closed", address)
 	for ctx.Err() == nil {
 		var reply *gnmi.SubscribeResponse
 		if reply, err = subscribeClient.Recv(); err != nil {
@@ -263,13 +275,16 @@ func (c *CiscoTelemetryGNMI) handleSubscribeResponse(address string, reply *gnmi
 			if alias, ok := c.aliases[aliasPath]; ok {
 				name = alias
 			} else {
-				log.Printf("D! [inputs.cisco_telemetry_gnmi]: No measurement alias for GNMI path: %s", name)
+				c.Log.Debugf("No measurement alias for GNMI path: %s", name)
 			}
 		}
 
 		// Group metrics
 		for key, val := range fields {
-			grouper.Add(name, tags, timestamp, key[len(aliasPath)+1:], val)
+			if len(aliasPath) > 0 {
+				key = key[len(aliasPath)+1:]
+			}
+			grouper.Add(name, tags, timestamp, key, val)
 		}
 
 		lastAliasPath = aliasPath
@@ -287,6 +302,12 @@ func (c *CiscoTelemetryGNMI) handleTelemetryField(update *gnmi.Update, tags map[
 
 	var value interface{}
 	var jsondata []byte
+
+	// Make sure a value is actually set
+	if update.Val == nil || update.Val.Value == nil {
+		c.Log.Infof("Discarded empty or legacy type value with path: %q", path)
+		return aliasPath, nil
+	}
 
 	switch val := update.Val.Value.(type) {
 	case *gnmi.TypedValue_AsciiVal:
@@ -339,22 +360,27 @@ func (c *CiscoTelemetryGNMI) handlePath(path *gnmi.Path, tags map[string]string,
 
 	// Parse generic keys from prefix
 	for _, elem := range path.Elem {
-		builder.WriteRune('/')
-		builder.WriteString(elem.Name)
+		if len(elem.Name) > 0 {
+			builder.WriteRune('/')
+			builder.WriteString(elem.Name)
+		}
 		name := builder.String()
 
 		if _, exists := c.aliases[name]; exists {
 			aliasPath = name
 		}
 
-		for key, val := range elem.Key {
-			key = strings.Replace(key, "-", "_", -1)
+		if tags != nil {
+			for key, val := range elem.Key {
+				key = strings.Replace(key, "-", "_", -1)
 
-			// Use short-form of key if possible
-			if _, exists := tags[key]; exists {
-				tags[name+"/"+key] = val
-			} else {
-				tags[key] = val
+				// Use short-form of key if possible
+				if _, exists := tags[key]; exists {
+					tags[name+"/"+key] = val
+				} else {
+					tags[key] = val
+				}
+
 			}
 		}
 	}

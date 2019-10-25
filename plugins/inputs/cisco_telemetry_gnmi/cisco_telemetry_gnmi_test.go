@@ -62,6 +62,13 @@ func (m *mockGNMIServer) Subscribe(server gnmi.GNMI_SubscribeServer) error {
 	require.Equal(m.t, metadata.Get("username"), []string{"theuser"})
 	require.Equal(m.t, metadata.Get("password"), []string{"thepassword"})
 
+	// Must read request before sending a response; even though we don't check
+	// the request itself currently.
+	_, err := server.Recv()
+	if err != nil {
+		panic(err)
+	}
+
 	switch m.scenario {
 	case 0:
 		return fmt.Errorf("testerror")
@@ -91,17 +98,23 @@ func (m *mockGNMIServer) Subscribe(server gnmi.GNMI_SubscribeServer) error {
 }
 
 func TestGNMIError(t *testing.T) {
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
 	server := grpc.NewServer()
 	acc := &testutil.Accumulator{}
 	gnmi.RegisterGNMIServer(server, &mockGNMIServer{t: t, scenario: 0, server: server, acc: acc})
 
-	c := &CiscoTelemetryGNMI{Addresses: []string{listener.Addr().String()},
-		Username: "theuser", Password: "thepassword", Encoding: "proto",
+	c := &CiscoTelemetryGNMI{
+		Log:       testutil.Logger{},
+		Addresses: []string{listener.Addr().String()},
+		Username:  "theuser", Password: "thepassword", Encoding: "proto",
 		Redial: internal.Duration{Duration: 1 * time.Second}}
 
-	require.Nil(t, c.Start(acc))
-	go server.Serve(listener)
+	require.NoError(t, c.Start(acc))
+	go func() {
+		err := server.Serve(listener)
+		require.NoError(t, err)
+	}()
 	acc.WaitError(1)
 	c.Stop()
 	server.Stop()
@@ -157,20 +170,25 @@ func mockGNMINotification() *gnmi.Notification {
 }
 
 func TestGNMIMultiple(t *testing.T) {
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
 	server := grpc.NewServer()
 	acc := &testutil.Accumulator{}
 	gnmi.RegisterGNMIServer(server, &mockGNMIServer{t: t, scenario: 1, server: server, acc: acc})
 
-	c := &CiscoTelemetryGNMI{Addresses: []string{listener.Addr().String()},
-		Username: "theuser", Password: "thepassword", Encoding: "proto",
+	c := &CiscoTelemetryGNMI{
+		Log:       testutil.Logger{},
+		Addresses: []string{listener.Addr().String()},
+		Username:  "theuser", Password: "thepassword", Encoding: "proto",
 		Redial:        internal.Duration{Duration: 1 * time.Second},
 		Subscriptions: []Subscription{{Name: "alias", Origin: "type", Path: "/model", SubscriptionMode: "sample"}},
 	}
 
-	require.Nil(t, c.Start(acc))
-
-	go server.Serve(listener)
+	require.NoError(t, c.Start(acc))
+	go func() {
+		err := server.Serve(listener)
+		require.NoError(t, err)
+	}()
 	acc.Wait(4)
 	c.Stop()
 	server.Stop()
@@ -195,20 +213,25 @@ func TestGNMIMultiple(t *testing.T) {
 }
 
 func TestGNMIMultipleRedial(t *testing.T) {
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
 	server := grpc.NewServer()
 	acc := &testutil.Accumulator{}
 	gnmi.RegisterGNMIServer(server, &mockGNMIServer{t: t, scenario: 2, server: server, acc: acc})
 
-	c := &CiscoTelemetryGNMI{Addresses: []string{listener.Addr().String()},
-		Username: "theuser", Password: "thepassword", Encoding: "proto",
+	c := &CiscoTelemetryGNMI{
+		Log:       testutil.Logger{},
+		Addresses: []string{listener.Addr().String()},
+		Username:  "theuser", Password: "thepassword", Encoding: "proto",
 		Redial:        internal.Duration{Duration: 10 * time.Millisecond},
 		Subscriptions: []Subscription{{Name: "alias", Origin: "type", Path: "/model", SubscriptionMode: "sample"}},
 	}
 
-	require.Nil(t, c.Start(acc))
-
-	go server.Serve(listener)
+	require.NoError(t, c.Start(acc))
+	go func() {
+		err := server.Serve(listener)
+		require.NoError(t, err)
+	}()
 	acc.Wait(2)
 	server.Stop()
 
@@ -216,7 +239,10 @@ func TestGNMIMultipleRedial(t *testing.T) {
 	server = grpc.NewServer()
 	gnmi.RegisterGNMIServer(server, &mockGNMIServer{t: t, scenario: 3, server: server, acc: acc})
 
-	go server.Serve(listener)
+	go func() {
+		err := server.Serve(listener)
+		require.NoError(t, err)
+	}()
 	acc.Wait(4)
 	c.Stop()
 	server.Stop()
